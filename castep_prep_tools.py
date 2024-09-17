@@ -23,6 +23,7 @@ class ReadTpl:
                            'ELEC_ENERGY_TOL : 1.0e-5\n']
 
     def __init__(self, seedname: str) -> None:
+        # Initialize with the seedname and check if the template files exist.
         self.seedname = seedname
         self.tpl_cell_exist_ok, self.tpl_param_exist_ok = self.tpl_exist_ok()
         self.cell_lines = None
@@ -38,7 +39,7 @@ class ReadTpl:
                 self.cell_lines =  self._read_file(f'{self.seedname}.cell')
             else:
                 self.cell_lines = self.default_cell_lines
-        return self.default_cell_lines
+        return self.cell_lines
     
     def get_param_lines(self) -> List[str]:
         if self.param_lines is None:
@@ -46,7 +47,7 @@ class ReadTpl:
                 self.param_lines = self._read_file(f'{self.seedname}.param')
             else:
                 self.param_lines = self.default_param_lines
-        return self.default_param_lines
+        return self.param_lines
 
     def tpl_exist_ok(self) -> Tuple[bool, bool]:
         tpl_cell_exist_ok = os.path.exists(f'./{self.seedname}.cell')
@@ -80,12 +81,10 @@ class AddKeyword:
 
     def get_lines(self) -> List[str]:
         return self.lines
-    
-    def get_filename(self) -> str:
-        return self.filename
 
 class Modify:
     def __init__(self, filename: str, tpl_lines: List[str], keyword: str, value: str, unit: Optional[str] = None, is_block: bool = False) -> None:
+        # Initialize with filename, template lines, and modify the keyword or block
         self.lines = tpl_lines.copy()
         self.filename = filename
         if is_block:
@@ -96,17 +95,20 @@ class Modify:
     
     @staticmethod
     def get_keyword_idx(lines: List[str], keyword: str) -> int:
+        # Get the index of the line containing the keyword
         for idx, line in enumerate(lines):
             if keyword in line:
                 return idx
             
     def modify_line(self, keyword: str, value: str, unit: Optional[str] = None) -> List[str]:
+        # Modify a line containing the keyword with the new value
         line_idx = self.get_keyword_idx(self.lines, keyword)
         unit_str = f' {unit}' if unit else ''
         self.lines[line_idx] = f'{keyword} {value}{unit_str}\n'
         return self.lines
     
     def modify_block(self, keyword: str, value: str) -> List[str]:
+        # Modify a block containing the keyword with the new value
         start_key, end_key = f'%BLOCK {keyword}', f'%ENDBLOCK {keyword}'
         start_idx = self.get_keyword_idx(self.lines, start_key)
         end_idx = self.get_keyword_idx(self.lines, end_key)
