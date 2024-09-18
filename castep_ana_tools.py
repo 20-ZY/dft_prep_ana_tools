@@ -46,6 +46,8 @@ class ReadCASTEPOutputs:
         - final energy
         - enthalpy
     lattice_vectors
+    atom_info('elem', int)
+        - position
     '''
     def __init__(self, filename: str) -> None:
         self.filename = filename
@@ -106,37 +108,94 @@ class GetGeomOpt:
     H2eV = 27.211386246
     Bohr2Ang = 0.529177211
 
-    def __init__(self, seedname: str, XCs: Optional[List] = [None]) -> None:
+    def __init__(self, seedname: str, XCs: Optional[List] = None) -> None:
         self.seedname = seedname
-        self.XCs = XCs
+        self.XCs = XCs if XCs is not None else ['default']
+        self.all_atom_info = self.get_atom_info()
         self.geom_opt_info = self._read_geom_files()
+        self.lat_vecs = self.get_lat_vecs()
 
-    def _read_geom_files(self) -> Dict[str, Dict[str, float]]:
+    def get_atom_info(self) -> Dict[str, List[Tuple[str, int]]]:
+        all_atom_info = {}
+        for XC in self.XCs:
+            if XC == 'default':
+                cell_filename = f'{self.seedname}.cell'
+            else:
+                cell_filename = f'{self.seedname}_{XC}.cell'
+            with open(cell_filename, 'r') as cell_file:
+                lines = cell_file.readlines()
+                for idx, line in enumerate(lines):
+                    if '%BLOCK POSITIONS_FRAC' in line:
+                        start_idx = idx
+                    if '%ENDBLOCK POSITIONS_FRAC' in line:
+                        end_idx = idx
+                atoms = [(line.split()[0]) for line in lines[start_idx + 1 : end_idx]]
+                element_count = {}
+                atom_info = []
+                for element in atoms:
+                    if element not in element_count:
+                        element_count[element] = 1
+                    else:
+                        element_count[element] += 1
+                    atom_info.append((element, element_count[element]))
+            all_atom_info[XC] = atom_info
+        return all_atom_info
+
+    def _read_geom_files(self) -> Dict[str, Dict[Any, np.array]]:
         geom_opt_info = {}
         for XC in self.XCs:
             geom_opt_info[XC] = {}
-            if XC is None:
+            if XC == 'default':
                 output = ReadCASTEPOutputs(f'{self.seedname}.geom')._read_file()
             else:
                 output = ReadCASTEPOutputs(f'{self.seedname}_{XC}.geom')._read_file()
             geom_opt_info[XC]['energy'] = np.array(GetData(output, 'energy').get_data())
             geom_opt_info[XC]['lattice_vectors'] = np.array(GetData(output, 'lattice_vectors').get_data())
+            for atom_info in self.all_atom_info[XC]:
+                geom_opt_info[XC][atom_info] = np.array(GetData(output, atom_info, 'position').get_data()) * self.Bohr2Ang
         return geom_opt_info
     
-    def get_final_energy(self) -> float:
+    def get_final_energy(self) -> Dict[str, float]:
         final_energy = {}
         for XC, data in self.geom_opt_info.items():
             final_energy[XC] = np.round(data['energy'][0][0] * self.H2eV, decimals=8)
         return final_energy
 
-    def get_enthalpy(self) -> float:
+    def get_enthalpy(self) -> Dict[str, float]:
         enthalpy = {}
         for XC, data in self.geom_opt_info.items():
             enthalpy[XC] = np.round(data['energy'][0][1] * self.H2eV, decimals=8)
         return enthalpy
     
-    def get_lat_vecs(self) -> np.array:
+    def get_lat_vecs(self) -> Dict[str, np.array]:
         lattice_vectors = {}
         for XC, data in self.geom_opt_info.items():
-            lattice_vectors[XC] = np.round(data['lattice_vectors'] * self.Bohr2Ang, decimals=8)
+            lattice_vectors[XC] = np.round(data['lattice_vectors'] * self.Bohr2Ang, decimals=6)
         return lattice_vectors
+    
+    def get_coords(self) -> Dict[str, np.array]:
+        frac_coords = {}
+        for XC, data in self.geom_opt_info.items():
+            frac_coords[XC] = {}
+            bases = np.array(self.lat_vecs[XC]).T
+            for atom in self.all_atom_info[XC]:
+                cart_coords = data[atom]
+                frac_coords[XC][atom] = np.round(np.linalg.solve(bases, cart_coords), decimals=6)
+        return frac_coords
+    
+    def get_frac_block(self) -> Dict[str, str]:
+        frac_coords = self.get_coords()
+        frac_block = {}
+        for XC, data in frac_coords.items():
+            frac_block[XC] = ''
+            for atom in self.all_atom_info[XC]:
+                frac_block[XC] += f'    {atom[0]}    {data[atom][0]:.6f}    {data[atom][1]:.6f}    {data[atom][2]:.6f}\n'
+        return frac_block
+
+    def get_lat_block(self) -> Dict[str, str]:
+        lat_block = {}
+        for XC, data in self.lat_vecs.items():
+            lat_block[XC] = ''
+            for vec in data:
+                lat_block[XC] += f'    {vec[0]:.6f}    {vec[1]:.6f}    {vec[2]:.6f}\n'
+        return lat_block
