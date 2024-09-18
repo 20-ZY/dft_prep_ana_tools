@@ -110,10 +110,10 @@ class Modify:
     
     def modify_block(self) -> List[str]:
         start_key, end_key = f'%BLOCK {self.keyword}', f'%ENDBLOCK {self.keyword}'
-        start_idx = get_keyword_idx(self.lines, f'%BLOCK {self.keyword}')
-        end_idx = get_keyword_idx(self.lines, f'%ENDBLOCK {self.keyword}')
-        # self.lines[start_idx : end_idx + 1] = [f'{start_key}\n', f'{self.value}', f'{end_key}\n']
-        return start_idx, end_idx
+        start_idx = get_keyword_idx(self.lines, start_key)
+        end_idx = get_keyword_idx(self.lines, end_key)
+        self.lines[start_idx : end_idx + 1] = [f'{start_key}\n', f'{self.value}', f'{end_key}\n']
+        return self.lines
     
     def get_lines(self) -> List[str]:
         return self.lines
