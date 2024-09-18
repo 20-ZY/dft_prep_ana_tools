@@ -23,7 +23,6 @@ class ReadTpl:
                            'ELEC_ENERGY_TOL : 1.0e-5\n']
 
     def __init__(self, seedname: str) -> None:
-        # Initialize with the seedname and check if the template files exist.
         self.seedname = seedname
         self.tpl_cell_exist_ok, self.tpl_param_exist_ok = self.tpl_exist_ok()
         self.cell_lines = None
@@ -32,6 +31,11 @@ class ReadTpl:
     def _read_file(self, filename: str) -> List[str]:
         with open(f'{filename}', 'r') as file:
             return file.readlines()
+        
+    def tpl_exist_ok(self) -> Tuple[bool, bool]:
+        tpl_cell_exist_ok = os.path.exists(f'./{self.seedname}.cell')
+        tpl_param_exist_ok = os.path.exists(f'./{self.seedname}.param')
+        return tpl_cell_exist_ok, tpl_param_exist_ok
 
     def get_cell_lines(self) -> List[str]:
         if self.cell_lines is None:
@@ -48,18 +52,20 @@ class ReadTpl:
             else:
                 self.param_lines = self.default_param_lines
         return self.param_lines
-
-    def tpl_exist_ok(self) -> Tuple[bool, bool]:
-        tpl_cell_exist_ok = os.path.exists(f'./{self.seedname}.cell')
-        tpl_param_exist_ok = os.path.exists(f'./{self.seedname}.param')
-        return tpl_cell_exist_ok, tpl_param_exist_ok
     
 def write_file(filename: str, cell_lines: List[str], param_lines: List[str]) -> None:
     with open(f'{filename}.cell', 'w') as cell_file, open(f'{filename}.param', 'w') as param_file:
         cell_file.writelines(cell_lines)
         param_file.writelines(param_lines)
 
+def get_keyword_idx(lines: List[str], keyword: str) -> int:
+    # Output the location of the keyword in the list of lines.
+    for idx, line in enumerate(lines):
+        if keyword in line:
+            return idx
+        
 class AddKeyword:
+    # Only used for modifying template files, not for generating new files, therefore there are no filename-related parameters or variables in the function.
     def __init__(self, tpl_lines: List[str], keyword: str, value: str, unit: Optional[str] = None, is_block: bool = False) -> None:
         self.lines = tpl_lines.copy()
         if is_block:
@@ -83,37 +89,31 @@ class AddKeyword:
         return self.lines
 
 class Modify:
+    # Used to modify parameters and generate a new filename in a fixed format. If a new filename is not adopted, the filename may not be output. Through multiple iterations, the filename can be selectively generated.
     def __init__(self, filename: str, tpl_lines: List[str], keyword: str, value: str, unit: Optional[str] = None, is_block: bool = False) -> None:
-        # Initialize with filename, template lines, and modify the keyword or block
         self.lines = tpl_lines.copy()
         self.filename = filename
+        self.keyword = keyword
+        self.value = value
+        self.unit = unit
         if is_block:
-            self.modify_block(keyword, value)
+            self.modify_block()
         else:
-            self.modify_line(keyword, value, unit)
+            self.modify_line()
             self.filename += f'_{value}'
-    
-    @staticmethod
-    def get_keyword_idx(lines: List[str], keyword: str) -> int:
-        # Get the index of the line containing the keyword
-        for idx, line in enumerate(lines):
-            if keyword in line:
-                return idx
-            
-    def modify_line(self, keyword: str, value: str, unit: Optional[str] = None) -> List[str]:
-        # Modify a line containing the keyword with the new value
-        line_idx = self.get_keyword_idx(self.lines, keyword)
-        unit_str = f' {unit}' if unit else ''
-        self.lines[line_idx] = f'{keyword} {value}{unit_str}\n'
+
+    def modify_line(self) -> List[str]:
+        line_idx = get_keyword_idx(self.lines, self.keyword)
+        unit_str = f' {self.unit}' if self.unit else ''
+        self.lines[line_idx] = f'{self.keyword} {self.value}{unit_str}\n'
         return self.lines
     
-    def modify_block(self, keyword: str, value: str) -> List[str]:
-        # Modify a block containing the keyword with the new value
-        start_key, end_key = f'%BLOCK {keyword}', f'%ENDBLOCK {keyword}'
-        start_idx = self.get_keyword_idx(self.lines, start_key)
-        end_idx = self.get_keyword_idx(self.lines, end_key)
-        self.lines[start_idx : end_idx + 1] = [f'{start_key}\n', f'{value}', f'{end_key}\n']
-        return self.lines
+    def modify_block(self) -> List[str]:
+        start_key, end_key = f'%BLOCK {self.keyword}', f'%ENDBLOCK {self.keyword}'
+        start_idx = get_keyword_idx(self.lines, f'%BLOCK {self.keyword}')
+        end_idx = get_keyword_idx(self.lines, f'%ENDBLOCK {self.keyword}')
+        # self.lines[start_idx : end_idx + 1] = [f'{start_key}\n', f'{self.value}', f'{end_key}\n']
+        return start_idx, end_idx
     
     def get_lines(self) -> List[str]:
         return self.lines
@@ -129,8 +129,11 @@ class LatVecs:
             self.lat_vecs = self.conv_lat_vecs_abc()
         else:
             self.lat_vecs = self.ext_lat_vecs() 
-        
 
+    def is_abc(self) -> bool:
+        # Check if the cell file is in LATTICE_CART format. 
+        return any('%BLOCK LATTICE_ABC' in line for line in self.lines)
+        
     def ext_lat_vecs(self) -> np.ndarray:
         lat_vecs = []
         # Extract the lattice vectors from the initial cell file of LATTICE_CART. 
@@ -138,7 +141,7 @@ class LatVecs:
             if f'%BLOCK LATTICE_CART' in line:
                 lat_vecs = [self.lines[i + 1].split(), self.lines[i + 2].split(), self.lines[i + 3].split()]
                 lat_vecs = np.array(lat_vecs, dtype=float)
-                lat_vecs = np.round(lat_vecs, decimals=8)
+                lat_vecs = np.round(lat_vecs, decimals=6)
         return lat_vecs
     
     def conv_lat_vecs_abc(self) -> np.ndarray:
@@ -156,12 +159,8 @@ class LatVecs:
                 C_x = C * np.cos(beta)
                 C_y = C * (np.cos(alpha) - (np.sin(gamma) * np.cos(beta)) / np.sin(gamma)) / np.sin(gamma)
                 C_z = np.sqrt(C ** 2 - (C * np.cos(beta)) ** 2 - (C * (np.cos(alpha) - (np.sin(gamma) * np.cos(beta)) / np.sin(gamma)) / np.sin(gamma)) ** 2)
-        lat_vecs = np.round([[A_x, A_y, A_z], [B_x, B_y, B_z], [C_x, C_y, C_z]], decimals=8)
+        lat_vecs = np.round([[A_x, A_y, A_z], [B_x, B_y, B_z], [C_x, C_y, C_z]], decimals=6)
         return lat_vecs
-
-    def is_abc(self) -> bool:
-        # Check if the cell file is in LATTICE_CART format. 
-        return any('%BLOCK LATTICE_ABC' in line for line in self.lines)
     
     def get_lat_vecs(self) -> np.ndarray:
         return self.lat_vecs
@@ -187,9 +186,9 @@ class InputForEC:
 
     def format_lat_vecs(self, lat_vecs: np.ndarray) -> List[str]:
         return [
-            f'{four_space}{lat_vecs[0][0]:.8f}{four_space}{lat_vecs[0][1]:.8f}{four_space}{lat_vecs[0][2]:.8f}\n', 
-            f'{four_space}{lat_vecs[1][0]:.8f}{four_space}{lat_vecs[1][1]:.8f}{four_space}{lat_vecs[1][2]:.8f}\n', 
-            f'{four_space}{lat_vecs[2][0]:.8f}{four_space}{lat_vecs[2][1]:.8f}{four_space}{lat_vecs[2][2]:.8f}\n']
+            f'{four_space}{lat_vecs[0][0]:.6f}{four_space}{lat_vecs[0][1]:.6f}{four_space}{lat_vecs[0][2]:.6f}\n', 
+            f'{four_space}{lat_vecs[1][0]:.6f}{four_space}{lat_vecs[1][1]:.6f}{four_space}{lat_vecs[1][2]:.6f}\n', 
+            f'{four_space}{lat_vecs[2][0]:.6f}{four_space}{lat_vecs[2][1]:.6f}{four_space}{lat_vecs[2][2]:.6f}\n']
     
     def check_modify(self) -> List[str]:
         param_found = False
@@ -215,7 +214,7 @@ class InputForEC:
             self.all_def_lat_vecs = {}
             for C_ij, strain_mats in self.all_strain_mats.items():
                 def_lat_vecs = np.array([self.deformed_lat_vecs(lat_vecs, strain_mat) for strain_mat in strain_mats])
-                self.all_def_lat_vecs[C_ij] = np.round(def_lat_vecs, decimals=8)
+                self.all_def_lat_vecs[C_ij] = np.round(def_lat_vecs, decimals=6)
 
 
         def get_strain_mats(self, cry_sys: str) -> List[np.ndarray]:
