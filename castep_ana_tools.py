@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 import os
 import matplotlib.pyplot as plt
+import castep_prep_tools as pt
 
 class ReadCASTEPOutputs:
     '''
@@ -199,3 +200,109 @@ class GetGeomOpt:
             for vec in data:
                 lat_block[XC] += f'    {vec[0]:.6f}    {vec[1]:.6f}    {vec[2]:.6f}\n'
         return lat_block
+    
+class GetECs:
+    Cij_order = {
+                'cubic': ['C11', 'C12', 'C44'],
+                'hcp': ['C11', 'C12', 'C13', 'C33', 'C44'], 
+                'tetr': ['C11', 'C12', 'C13', 'C33', 'C44', 'C66'],
+            }
+    H2eV = 27.211386246
+    eV_A32GPa = 160.21766208
+    
+    def __init__(self, seedname_prefix: str, cry_sys: str, max_strain: float, steps: int, XCs: Optional[List] = None) -> None:
+        self.seednames = {}
+        self.cry_sys = cry_sys
+        self.max_strain = max_strain
+        self.steps = steps
+        self.XCs = XCs if XCs is not None else ['default']
+        if self.XCs == ['default']:
+            self.seednames['default'] = {}
+            self.seednames['default']['equil'] = f'./{seedname_prefix}_equil'
+            for C_ij in self.Cij_order[self.cry_sys]:
+                self.seednames['default'][f'{C_ij}'] = []
+                for idx in range(1, self.steps * 2 + 1):
+                    self.seednames['default'][f'{C_ij}'].append(f'./{seedname_prefix}_{C_ij}_{idx:02}')
+        else:
+            for XC in self.XCs:
+                self.seednames[XC] = {}
+                self.seednames[XC]['equil'] = f'{XC}/{seedname_prefix}_{XC}_equil'
+                for C_ij in self.Cij_order[self.cry_sys]:
+                    self.seednames[XC][f'{C_ij}'] = []
+                    for idx in range(1, self.steps * 2 + 1):
+                        self.seednames[XC][f'{C_ij}'].append(f'{XC}/{seedname_prefix}_{XC}_{C_ij}_{idx:02}')
+        self.volumes = self.get_volume()
+        self.all_energies = self.get_energy()
+        self.all_strains = self.get_strain()
+        self.all_itas = self.get_itas()
+
+    def get_volume(self) -> Dict[str, float]:
+        volumes = {}
+        for XC in self.seednames.keys():
+            volumes[XC] = []
+            equil_cell = pt.ReadTpl(f'{self.seednames[XC]['equil']}').get_cell_lines()
+            lat_vecs = np.array(pt.LatVecs(equil_cell).get_lat_vecs())
+            lat_vec1, lat_vec2, lat_vec3 = lat_vecs
+            volumes[XC] = np.dot(lat_vec1, np.cross(lat_vec2, lat_vec3))
+        return volumes
+    
+    def get_strain(self) -> Dict[str, np.array]:
+        strain = {}
+        for XC, data in self.all_energies.items():
+            strain[XC] = {}
+            for C_ij in data.keys():
+                strain[XC][C_ij] = []
+                for i in range(self.steps):
+                    strain[XC][C_ij].append(float((i + 1) / self.steps * self.max_strain))
+                    strain[XC][C_ij].append(float((i + 1) / self.steps * self.max_strain * -1))
+                strain[XC][C_ij] = np.sort(np.array(strain[XC][C_ij]))
+                strain[XC][C_ij] = np.insert(strain[XC][C_ij], self.steps, 0.)
+        return strain
+    
+    def get_energy(self) -> Dict[str, Dict[str, np.array]]:
+        energies = {}
+        for XC, data in self.seednames.items():
+            energies[XC] = {}
+            equil_output = ReadCASTEPOutputs(f'{data["equil"]}.geom')._read_file()
+            equil_energy = equil_output['energy'][0][0] * self.H2eV
+            for C_ij in self.Cij_order[self.cry_sys]:
+                energies[XC][C_ij] = []
+                for seed in data[C_ij]:
+                    output = ReadCASTEPOutputs(f'{seed}.geom')._read_file()
+                    energies[XC][C_ij].append(output['energy'][0][0] * self.H2eV)
+                energies[XC][C_ij] = np.array(energies[XC][C_ij])
+                energies[XC][C_ij] = np.insert(energies[XC][C_ij], self.steps, equil_energy)
+                energies[XC][C_ij] = ((energies[XC][C_ij] - equil_energy) / self.volumes[XC]) * self.eV_A32GPa
+        return energies
+    
+    def get_itas(self) -> Dict[str, Dict[str, float]]:
+        itas = {}
+        for XC, data in self.all_energies.items():
+            itas[XC] = {}
+            for C_ij, energy in data.items():
+                itas[XC][C_ij] = np.polyfit(self.all_strains[XC][C_ij], energy, 2)[0] * 2
+        return itas
+
+    def get_Cij(self) -> Dict[str, float]:
+        Cij = {}
+        for XC, data in self.all_itas.items():
+            Cij[XC] = {}
+            if self.cry_sys == 'cubic':
+                Cij[XC]['C11'] = data['C11']
+                Cij[XC]['C12'] = data['C12'] / 2 - data['C11']
+                Cij[XC]['C44'] = data['C44']
+            elif self.cry_sys == 'hcp':
+                Cij[XC]['C11'] = data['C11']
+                Cij[XC]['C12'] = data['C12'] / 2 - data['C11']
+                Cij[XC]['C13'] = (data['C13'] - data['C11'] - data['C33']) / 2
+                Cij[XC]['C33'] = data['C33']
+                Cij[XC]['C44'] = data['C44']
+            elif self.cry_sys == 'tetr':
+                Cij[XC]['C11'] = data['C11']
+                Cij[XC]['C12'] = data['C12'] / 2 - data['C11']
+                Cij[XC]['C13'] = (data['C13'] - data['C11'] - data['C33']) / 2
+                Cij[XC]['C33'] = data['C33']
+                Cij[XC]['C44'] = data['C44']
+                Cij[XC]['C66'] = data['C66']
+            # ... add more crystal systems
+        return Cij
